@@ -788,7 +788,8 @@ const vCartoes = {
     const tot = items.reduce((s,e)=>s+e.v,0); const st=S.inv[`${c.id}_${m}`];
     const closeD = `${addM(m, (+c.due>+c.close)?0:-1)}-${pad(Math.min(dim(addM(m,(+c.due>+c.close)?0:-1)),+c.close))}`;
     const dueD = `${m}-${pad(Math.min(dim(m),+c.due))}`; const today=todayStr();
-    const status = st&&st.paid ? `<span class="pill ok">paga em ${dLabel(st.pd||dueD)}</span>` : today>dueD && tot>0 ? `<span class="pill late">vencida</span>` : today>=closeD ? `<span class="pill pend">fechada</span>` : `<span class="pill">aberta</span>`;
+    const payAc = st&&st.paid&&st.acct ? acctById(st.acct) : null;
+    const status = st&&st.paid ? `<span class="pill ${payAc?'ok':'pend'}">paga em ${dLabel(st.pd||dueD)} · ${payAc? esc(payAc.name) : 'sem conta'}</span>` : today>dueD && tot>0 ? `<span class="pill late">vencida</span>` : today>=closeD ? `<span class="pill pend">fechada</span>` : `<span class="pill">aberta</span>`;
     const next = invoiceTotal(c.id, addM(m,1));
     return `<div class="cards">${S.cards.map((k,i)=>`<button class="cardvis" data-cid="${k.id}" aria-pressed="${k.id===c.id}" style="background:linear-gradient(135deg, var(${SLOTS[(+k.color||i)%8]}), color-mix(in srgb, var(${SLOTS[(+k.color||i)%8]}) 55%, #000))"><div><div class="cn">${esc(k.name)}</div><div class="cd">fecha dia ${+k.close} · vence dia ${+k.due}</div></div><div class="cv">${fmt(invoiceTotal(k.id,m))}</div></button>`).join('')}</div>
     <section class="panel"><div class="sec-h"><h2>Fatura de ${MONL[+m.slice(5,7)-1]} · ${esc(c.name)}</h2>${status}</div>
@@ -799,7 +800,7 @@ const vCartoes = {
         <div><div class="muted" style="font-size:12px;font-weight:600">PRÓXIMA</div><div class="num" style="font-size:16px;font-weight:600">${fmt(next)}</div></div>
         ${+c.limit>0? `<div><div class="muted" style="font-size:12px;font-weight:600">LIMITE USADO</div><div class="num" style="font-size:16px;font-weight:600">${pct(limitUsed(c)/c.limit)}</div></div>`:''}
       </div>
-      <div class="btns" style="margin-top:14px"><button class="btn ${st&&st.paid?'':'pri'} sm" id="payInv">${st&&st.paid?'Desmarcar pagamento':'Marcar como paga'}</button><button class="btn sm" id="impCard">Importar fatura</button><button class="btn sm" id="editCard">Editar cartão</button><button class="btn sm" id="addCard">Novo cartão</button></div>
+      <div class="btns" style="margin-top:14px"><button class="btn ${st&&st.paid?'':'pri'} sm" id="payInv">${st&&st.paid?'Editar pagamento':'Marcar como paga'}</button><button class="btn sm" id="impCard">Importar fatura</button><button class="btn sm" id="editCard">Editar cartão</button><button class="btn sm" id="addCard">Novo cartão</button></div>
       <div class="list" style="margin-top:6px">${items.length? items.map(itemRow).join('') : '<p class="muted" style="font-size:14px">Nenhuma compra nesta fatura.</p>'}</div>
     </section>
     <section class="panel"><div class="sec-h"><h2>Evolução das faturas · ${esc(c.name)}</h2><span class="aux">12 meses</span></div><div class="chartbox" style="margin-top:10px"><canvas id="cInv" aria-label="Valor das faturas por mês"></canvas></div></section>`;
@@ -811,12 +812,25 @@ const vCartoes = {
     const c=cardById(S.ui.card), m=S.month, key=`${c.id}_${m}`;
     $('#editCard').onclick=()=>openCardForm(c);
     $('#impCard').onclick=()=>openImport({mode:'card', card:c.id});
-    $('#payInv').onclick=async()=>{ const st=S.inv[key]; if(st&&st.paid){ await del('inv', key, 'Pagamento desmarcado'); return; }
+    $('#payInv').onclick=()=>{ const st=S.inv[key]||{}; const paid=!!st.paid;
       const tot=r2(invoiceTotal(c.id,m));
-      openSheet(`Pagar fatura · ${c.name}`, `<div class="frow"><label class="f">Valor pago<input type="text" id="pV" inputmode="decimal" value="${valIn(tot)}"></label><label class="f">Data do pagamento<input type="date" id="pD" value="${todayStr()}"></label></div>${acctSelect('pA', defAcctId(), 'Pago com a conta')}
-        <div class="btns" style="justify-content:flex-end"><button class="btn" id="pX">Cancelar</button><button class="btn pri" id="pOk">Confirmar pagamento</button></div>`, ()=>{
+      const amt0 = paid && st.amt>0 ? st.amt : tot; const pd0 = paid && st.pd ? st.pd : todayStr(); const ac0 = paid ? (st.acct||'') : defAcctId();
+      openSheet(`${paid?'Pagamento da fatura':'Pagar fatura'} · ${c.name}`, `<div class="frow"><label class="f">Valor pago<input type="text" id="pV" inputmode="decimal" value="${valIn(amt0)}"></label><label class="f">Data do pagamento<input type="date" id="pD" value="${pd0}"></label></div>
+        ${S.accts.length? acctSelect('pA', ac0, 'Pago com a conta') : '<div class="alert"><span class="ic">!</span><span>Cadastre sua conta no Início para o pagamento descontar do saldo.</span></div>'}
+        <div class="status" id="pHint" style="text-align:left"></div>
+        <div class="btns" style="justify-content:space-between"><div>${paid?'<button class="btn danger" id="pUn" data-l="Desmarcar pagamento">Desmarcar pagamento</button>':''}</div><div class="btns"><button class="btn" id="pX">Cancelar</button><button class="btn pri" id="pOk">${paid?'Salvar':'Confirmar pagamento'}</button></div></div>`, ()=>{
+        const hint=()=>{ const a=$('#pA')?$('#pA').value:''; const d=$('#pD').value; const msgs=[];
+          if(S.accts.length && !a) msgs.push('Sem conta escolhida: o saldo de nenhuma conta vai mudar.');
+          else if(a) msgs.push(`Desconta de ${esc(acctById(a).name)}.`);
+          if(d && d>todayStr()) msgs.push(`Data no futuro: o saldo só diminui em ${dLabel(d)}.`);
+          const ac=a&&acctById(a); if(ac && d && d<(ac.d0||'')) msgs.push(`Essa data é anterior ao cadastro da conta (${dLabel(ac.d0)}), então o pagamento já está incluído no saldo inicial e não desconta de novo.`);
+          $('#pHint').innerHTML=msgs.join(' '); };
+        if($('#pA')) $('#pA').onchange=hint; $('#pD').onchange=hint; hint();
         $('#pX').onclick=closeSheet;
-        $('#pOk').onclick=async()=>{ const v=parseVal($('#pV').value); closeSheet(); await safe(col('inv').doc(key).set({paid:true, pd:$('#pD').value||todayStr(), amt: v>0? r2(v) : tot, acct: ($('#pA')&&$('#pA').value)||null, at:new Date().toISOString()}), 'Fatura marcada como paga'); };
+        if($('#pUn')) armDelete($('#pUn'), async()=>{ closeSheet(); await del('inv', key, 'Pagamento desmarcado'); });
+        $('#pOk').onclick=async()=>{ const v=parseVal($('#pV').value); if(!(v>0)){ toast('Informe o valor pago.'); return; }
+          const rec={paid:true, pd:$('#pD').value||todayStr(), amt:r2(v), acct: ($('#pA')&&$('#pA').value)||null, at: st.at || new Date().toISOString()};
+          closeSheet(); await safe(col('inv').doc(key).set(rec), paid?'Pagamento atualizado':'Fatura marcada como paga'); };
       }); };
     bindItems(root);
     const ms=[]; for(let i=8;i>=-3;i--) ms.push(addM(m,-i));
@@ -1007,8 +1021,9 @@ function openTxForm(t, preset={}){
         } else { obj.st=pressed(body,'[data-g="status"] .chip')||'ok'; obj.due = obj.st==='pend'? ($('#fDue').value||null) : null; }
         if($('#fRep') && $('#fRep').checked){
           if(obj.pay==='credito' && obj.n>1){ toast('Uma compra parcelada não pode ser recorrente.'); return; }
+          const recAcct = obj.pay==='credito' ? null : (($('#fAcct')&&$('#fAcct').value)||null);
           closeSheet();
-          await put('rec', { t:obj.t, name: obj.desc||obj.cat, v:obj.v, cat:obj.cat, freq:'m', day:+d.slice(8,10), start:mon(d), pay:obj.pay||null, card:obj.card||null, acct: obj.pay==='credito'?null:(($('#fAcct')&&$('#fAcct').value)||null), sub: obj.cat==='Assinaturas', on:true, at:new Date().toISOString() }, 'Recorrente criada');
+          await put('rec', { t:obj.t, name: obj.desc||obj.cat, v:obj.v, cat:obj.cat, freq:'m', day:+d.slice(8,10), start:mon(d), pay:obj.pay||null, card:obj.card||null, acct: recAcct, sub: obj.cat==='Assinaturas', on:true, at:new Date().toISOString() }, 'Recorrente criada');
           return;
         }
       }
@@ -1187,7 +1202,7 @@ function openTrf(from){
     $('#tX').onclick=closeSheet;
     $('#tOk').onclick=async()=>{ const f=$('#tF').value, t=$('#tT').value, v=parseVal($('#tV').value);
       if(f===t){ toast('Escolha contas diferentes.'); return; } if(!(v>0)){ toast('Informe um valor maior que zero.'); return; }
-      closeSheet(); await put('trf', {from:f, to:t, v:r2(v), d:$('#tD').value||todayStr(), at:new Date().toISOString()}, 'Transferência registrada'); };
+      const d=$('#tD').value||todayStr(); closeSheet(); await put('trf', {from:f, to:t, v:r2(v), d, at:new Date().toISOString()}, 'Transferência registrada'); };
   });
 }
 
